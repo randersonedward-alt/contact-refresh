@@ -36,6 +36,20 @@ function norm(v) {
   return (v || "").toString().trim().toLowerCase();
 }
 
+// LinkedIn URLs are often saved inconsistently (http vs https, www vs no www,
+// trailing slash, tracking params). This strips all of that down to just the
+// meaningful part (e.g. "in/johndoe") so old vs new data actually matches.
+function normUrl(v) {
+  let s = (v || "").toString().trim().toLowerCase();
+  if (!s) return "";
+  s = s.replace(/^https?:\/\//, "");
+  s = s.replace(/^www\./, "");
+  s = s.split("?")[0];
+  s = s.replace(/\/+$/, "");
+  s = s.replace(/^linkedin\.com\//, "");
+  return s;
+}
+
 const GlobalStyle = () => (
   <style>{`
     @keyframes fadeInUp {
@@ -195,7 +209,7 @@ const STATUS_META = {
   changed: { label: "Changed", color: YELLOW, Icon: AlertTriangle },
   no_change: { label: "No change", color: GREEN, Icon: CheckCircle2 },
   not_found: { label: "Not found", color: PINK, Icon: XCircle },
-  needs_manual_linkedin_url: { label: "Needs LinkedIn URL", color: SLATE, Icon: HelpCircle },
+  duplicate_name: { label: "Same name found — check manually", color: SLATE, Icon: HelpCircle },
   error: { label: "Check failed", color: PINK, Icon: XCircle },
 };
 
@@ -206,7 +220,7 @@ export default function App() {
   const [oldRows, setOldRows] = useState(null);
   const [newRows, setNewRows] = useState(null);
   const [oldMap, setOldMap] = useState({ name: "", title: "", company: "", linkedin: "" });
-  const [newMap, setNewMap] = useState({ title: "", company: "", linkedin: "" });
+  const [newMap, setNewMap] = useState({ name: "", title: "", company: "", linkedin: "" });
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [results, setResults] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -239,6 +253,7 @@ export default function App() {
       if (rows.length) {
         const cols = Object.keys(rows[0]);
         setNewMap({
+          name: cols.find((c) => /name/i.test(c)) || "",
           title: cols.find((c) => /title|role/i.test(c)) || "",
           company: cols.find((c) => /company|employer|org/i.test(c)) || "",
           linkedin: cols.find((c) => /linkedin/i.test(c)) || "",
@@ -258,17 +273,42 @@ export default function App() {
     setError("");
     setStage("running");
 
+    // Group new-file records by normalized name, so we can tell when a name
+    // is unique (safe to match) vs. shared by more than one person (ambiguous).
     const newByLinkedin = new Map();
+    const newByName = new Map();
     newRows.forEach((r) => {
-      const li = norm(r[newMap.linkedin]);
+      const li = normUrl(r[newMap.linkedin]);
       if (li) newByLinkedin.set(li, r);
+      const nm = norm(r[newMap.name]);
+      if (nm) {
+        if (!newByName.has(nm)) newByName.set(nm, []);
+        newByName.get(nm).push(r);
+      }
     });
 
     const merged = oldRows.map((r) => {
       const name = r[oldMap.name] || "";
       const linkedin_url = r[oldMap.linkedin] || "";
-      const li = norm(linkedin_url);
-      const match = li ? newByLinkedin.get(li) : null;
+      const li = normUrl(linkedin_url);
+      const nm = norm(name);
+
+      let match = null;
+      let ambiguous = false;
+
+      // LinkedIn URL is an unambiguous identifier when present, so it wins
+      // even if the name also happens to collide with someone else.
+      if (li && newByLinkedin.has(li)) {
+        match = newByLinkedin.get(li);
+      } else if (nm && newByName.has(nm)) {
+        const candidates = newByName.get(nm);
+        if (candidates.length === 1) {
+          match = candidates[0];
+        } else {
+          ambiguous = true; // more than one person shares this name — don't guess
+        }
+      }
+
       return {
         name,
         old_title: r[oldMap.title] || "",
@@ -277,12 +317,13 @@ export default function App() {
         new_title: match ? (match[newMap.title] || "") : "",
         new_company: match ? (match[newMap.company] || "") : "",
         has_match: !!match,
+        ambiguous,
       };
     });
 
-    const needsCheck = merged.filter((c) => c.linkedin_url && c.has_match);
-    const needsFlag = merged.filter((c) => !c.linkedin_url);
-    const noMatchFound = merged.filter((c) => c.linkedin_url && !c.has_match);
+    const needsCheck = merged.filter((c) => c.has_match);
+    const duplicateNames = merged.filter((c) => c.ambiguous);
+    const noMatchFound = merged.filter((c) => !c.has_match && !c.ambiguous);
 
     setProgress({ done: 0, total: needsCheck.length });
 
@@ -312,10 +353,10 @@ export default function App() {
       setProgress({ done: Math.min(i + BATCH, needsCheck.length), total: needsCheck.length });
     }
 
-    const flagged = needsFlag.map((c) => ({ ...c, status: "needs_manual_linkedin_url", resolved_title: "", resolved_company: "", last_verified: today }));
+    const duplicates = duplicateNames.map((c) => ({ ...c, status: "duplicate_name", resolved_title: "", resolved_company: "", last_verified: today }));
     const unmatched = noMatchFound.map((c) => ({ ...c, status: "not_found", resolved_title: "", resolved_company: "", last_verified: today }));
 
-    setResults([...checked, ...flagged, ...unmatched]);
+    setResults([...checked, ...duplicates, ...unmatched]);
     setStage("results");
   }
 
@@ -412,7 +453,7 @@ export default function App() {
           <div key="mapping" className="stage-enter">
             <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: -0.5, margin: "0 0 8px", color: PURPLE }}>Match your columns</h1>
             <p style={{ fontSize: 14, color: SLATE, marginBottom: 24, maxWidth: 620, lineHeight: 1.5 }}>
-              Contacts are matched between files by LinkedIn URL.
+              Contacts are matched by name. If a LinkedIn URL is mapped on both sides, it's used to break ties when two people share a name.
             </p>
             <div className="responsive-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 28 }}>
               <div>
@@ -427,6 +468,7 @@ export default function App() {
               <div>
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: PINK, fontWeight: 700, marginBottom: 10 }}>New data — {newFile?.name}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <FieldSelect label="Name" columns={Object.keys(newRows[0] || {})} value={newMap.name} onChange={(v) => setNewMap({ ...newMap, name: v })} />
                   <FieldSelect label="Title" columns={Object.keys(newRows[0] || {})} value={newMap.title} onChange={(v) => setNewMap({ ...newMap, title: v })} />
                   <FieldSelect label="Company" columns={Object.keys(newRows[0] || {})} value={newMap.company} onChange={(v) => setNewMap({ ...newMap, company: v })} />
                   <FieldSelect label="LinkedIn URL" columns={Object.keys(newRows[0] || {})} value={newMap.linkedin} onChange={(v) => setNewMap({ ...newMap, linkedin: v })} />
@@ -435,14 +477,14 @@ export default function App() {
             </div>
             <button
               className="btn-anim"
-              disabled={!oldMap.linkedin || !newMap.linkedin}
+              disabled={!oldMap.name || !newMap.name}
               onClick={runComparison}
               style={{
                 marginTop: 28, display: "flex", alignItems: "center", gap: 8,
-                background: (!oldMap.linkedin || !newMap.linkedin) ? LINE : PINK,
-                color: (!oldMap.linkedin || !newMap.linkedin) ? SLATE : WHITE,
+                background: (!oldMap.name || !newMap.name) ? LINE : PINK,
+                color: (!oldMap.name || !newMap.name) ? SLATE : WHITE,
                 border: "none", borderRadius: 8, padding: "11px 20px", fontSize: 13, fontWeight: 700,
-                cursor: (!oldMap.linkedin || !newMap.linkedin) ? "not-allowed" : "pointer", fontFamily: "inherit",
+                cursor: (!oldMap.name || !newMap.name) ? "not-allowed" : "pointer", fontFamily: "inherit",
               }}
             >
               Run check <ArrowRight size={15} />
@@ -469,7 +511,7 @@ export default function App() {
         {stage === "results" && (
           <div key="results" className="stage-enter">
             <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-              {["all", "changed", "no_change", "not_found", "needs_manual_linkedin_url", "error"].map((f) => {
+              {["all", "changed", "no_change", "not_found", "duplicate_name", "error"].map((f) => {
                 if (f !== "all" && !counts[f]) return null;
                 const meta = STATUS_META[f];
                 const active = filter === f;
