@@ -367,30 +367,17 @@ export default function App() {
     setProgress({ done: 0, total: needsCheck.length });
 
     const today = new Date().toISOString().slice(0, 10);
-    const checked = [];
-    const BATCH = 8;
 
-    for (let i = 0; i < needsCheck.length; i += BATCH) {
-      const batch = needsCheck.slice(i, i + BATCH);
-      try {
-        const response = await fetch("/api/compare", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contacts: batch }),
-        });
-        const data = await response.json();
-        const parsed = data.results || batch.map(() => ({ status: "error", resolved_title: "", resolved_company: "" }));
-        batch.forEach((c, idx) => {
-          const p = parsed[idx] || { status: "error", resolved_title: "", resolved_company: "" };
-          checked.push({ ...c, status: p.status, resolved_title: p.resolved_title, resolved_company: p.resolved_company, last_verified: today });
-        });
-      } catch (e) {
-        batch.forEach((c) => {
-          checked.push({ ...c, status: "error", resolved_title: "", resolved_company: "", last_verified: today });
-        });
-      }
-      setProgress({ done: Math.min(i + BATCH, needsCheck.length), total: needsCheck.length });
-    }
+    // Direct comparison — no external API needed. A contact is "changed" if
+    // their title or company text differs from what's on file (case/spacing
+    // insensitive); otherwise they're "no change".
+    const checked = needsCheck.map((c) => {
+      const titleSame = norm(c.old_title) === norm(c.new_title);
+      const companySame = norm(c.old_company) === norm(c.new_company);
+      const status = (titleSame && companySame) ? "no_change" : "changed";
+      return { ...c, status, resolved_title: c.new_title, resolved_company: c.new_company, last_verified: today };
+    });
+    setProgress({ done: needsCheck.length, total: needsCheck.length });
 
     const duplicates = duplicateNames.map((c) => ({ ...c, status: "duplicate_name", resolved_title: "", resolved_company: "", last_verified: today }));
     const unmatched = noMatchFound.map((c) => ({ ...c, status: "not_found", resolved_title: "", resolved_company: "", last_verified: today }));
@@ -598,8 +585,8 @@ export default function App() {
           <div key="results" className="stage-enter">
             <h1 style={{ fontFamily: DISPLAY, fontSize: 26, fontWeight: 700, letterSpacing: -0.5, margin: "0 0 20px", color: PURPLE }}>Results</h1>
 
-            <div className="responsive-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 24 }}>
-              {["changed", "no_change", "not_found", "duplicate_name", "error"].map((f) => {
+            <div className="responsive-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 24 }}>
+              {["changed", "no_change", "not_found", "duplicate_name"].map((f) => {
                 const meta = STATUS_META[f];
                 if (!meta) return null;
                 const Icon = meta.Icon;
