@@ -410,6 +410,25 @@ export default function App() {
     XLSX.writeFile(wb, `contact-refresh-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
+  function exportNotFound() {
+    const toRow = (r) => ({
+      "Record ID": r.record_id,
+      "First Name": r.first_name,
+      "Last Name": r.last_name,
+      "Old Title": r.old_title,
+      "Old Company": r.old_company,
+      "LinkedIn URL": r.linkedin_url,
+      "Last Verified": r.last_verified,
+    });
+
+    const notFoundSheet = XLSX.utils.json_to_sheet(results.filter((r) => r.status === "not_found").map(toRow));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, notFoundSheet, "Not found");
+
+    XLSX.writeFile(wb, `contact-refresh-not-found-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
   function reset() {
     setStage("upload");
     setOldFile(null); setNewFile(null);
@@ -626,8 +645,17 @@ export default function App() {
                   </button>
                 );
               })}
+              {counts.not_found > 0 && (
+                <button className="btn-anim" onClick={exportNotFound} style={{
+                  marginLeft: "auto", display: "flex", alignItems: "center", gap: 6,
+                  background: WHITE, color: PINK, border: `1.5px solid ${PINK}`, borderRadius: 20,
+                  padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  <Download size={13} /> Export not found ({counts.not_found})
+                </button>
+              )}
               <button className="btn-anim" onClick={exportWorkbook} style={{
-                marginLeft: "auto", display: "flex", alignItems: "center", gap: 6,
+                marginLeft: counts.not_found > 0 ? 0 : "auto", display: "flex", alignItems: "center", gap: 6,
                 background: GRAD_ACCENT, color: WHITE, border: "none", borderRadius: 20,
                 padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                 boxShadow: "0 4px 12px rgba(227,28,121,0.28)",
