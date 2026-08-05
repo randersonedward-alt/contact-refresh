@@ -219,8 +219,8 @@ export default function App() {
   const [newFile, setNewFile] = useState(null);
   const [oldRows, setOldRows] = useState(null);
   const [newRows, setNewRows] = useState(null);
-  const [oldMap, setOldMap] = useState({ name: "", title: "", company: "", linkedin: "" });
-  const [newMap, setNewMap] = useState({ name: "", title: "", company: "", linkedin: "" });
+  const [oldMap, setOldMap] = useState({ recordId: "", firstName: "", lastName: "", title: "", company: "", linkedin: "" });
+  const [newMap, setNewMap] = useState({ firstName: "", lastName: "", title: "", company: "", linkedin: "" });
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [results, setResults] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -234,7 +234,9 @@ export default function App() {
       if (rows.length) {
         const cols = Object.keys(rows[0]);
         setOldMap({
-          name: cols.find((c) => /name/i.test(c)) || "",
+          recordId: cols.find((c) => /hubspot.*id|record.*id|contact.*id/i.test(c)) || "",
+          firstName: cols.find((c) => /^first[\s_-]*name$/i.test(c)) || cols.find((c) => /first/i.test(c) && /name/i.test(c)) || "",
+          lastName: cols.find((c) => /^last[\s_-]*name$/i.test(c)) || cols.find((c) => /last|surname/i.test(c) && /name/i.test(c)) || "",
           title: cols.find((c) => /title|role/i.test(c)) || "",
           company: cols.find((c) => /company|employer|org/i.test(c)) || "",
           linkedin: cols.find((c) => /linkedin/i.test(c)) || "",
@@ -253,7 +255,8 @@ export default function App() {
       if (rows.length) {
         const cols = Object.keys(rows[0]);
         setNewMap({
-          name: cols.find((c) => /name/i.test(c)) || "",
+          firstName: cols.find((c) => /^first[\s_-]*name$/i.test(c)) || cols.find((c) => /first/i.test(c) && /name/i.test(c)) || "",
+          lastName: cols.find((c) => /^last[\s_-]*name$/i.test(c)) || cols.find((c) => /last|surname/i.test(c) && /name/i.test(c)) || "",
           title: cols.find((c) => /title|role/i.test(c)) || "",
           company: cols.find((c) => /company|employer|org/i.test(c)) || "",
           linkedin: cols.find((c) => /linkedin/i.test(c)) || "",
@@ -275,12 +278,14 @@ export default function App() {
 
     // Group new-file records by normalized name, so we can tell when a name
     // is unique (safe to match) vs. shared by more than one person (ambiguous).
+    // Group new-file records by normalized full name, so we can tell when a
+    // name is unique (safe to match) vs. shared by more than one person (ambiguous).
     const newByLinkedin = new Map();
     const newByName = new Map();
     newRows.forEach((r) => {
       const li = normUrl(r[newMap.linkedin]);
       if (li) newByLinkedin.set(li, r);
-      const nm = norm(r[newMap.name]);
+      const nm = norm(`${r[newMap.firstName] || ""} ${r[newMap.lastName] || ""}`);
       if (nm) {
         if (!newByName.has(nm)) newByName.set(nm, []);
         newByName.get(nm).push(r);
@@ -288,10 +293,12 @@ export default function App() {
     });
 
     const merged = oldRows.map((r) => {
-      const name = r[oldMap.name] || "";
+      const first_name = r[oldMap.firstName] || "";
+      const last_name = r[oldMap.lastName] || "";
+      const record_id = oldMap.recordId ? (r[oldMap.recordId] || "") : "";
       const linkedin_url = r[oldMap.linkedin] || "";
       const li = normUrl(linkedin_url);
-      const nm = norm(name);
+      const nm = norm(`${first_name} ${last_name}`);
 
       let match = null;
       let ambiguous = false;
@@ -310,7 +317,10 @@ export default function App() {
       }
 
       return {
-        name,
+        record_id,
+        first_name,
+        last_name,
+        name: `${first_name} ${last_name}`.trim(),
         old_title: r[oldMap.title] || "",
         old_company: r[oldMap.company] || "",
         linkedin_url,
@@ -360,20 +370,28 @@ export default function App() {
     setStage("results");
   }
 
-  function exportCsv() {
-    const headers = ["Name", "Old Title", "Old Company", "New Title", "New Company", "Status", "LinkedIn URL", "Last Verified"];
-    const rows = results.map((r) => [
-      r.name, r.old_title, r.old_company, r.resolved_title, r.resolved_company,
-      STATUS_META[r.status]?.label || r.status, r.linkedin_url, r.last_verified,
-    ]);
-    const csv = [headers, ...rows].map((row) => row.map((v) => `"${(v || "").toString().replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `contact-refresh-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  function exportWorkbook() {
+    const toRow = (r) => ({
+      "Record ID": r.record_id,
+      "First Name": r.first_name,
+      "Last Name": r.last_name,
+      "Old Title": r.old_title,
+      "Old Company": r.old_company,
+      "New Title": r.status === "changed" ? r.resolved_title : "",
+      "New Company": r.status === "changed" ? r.resolved_company : "",
+      "Status": STATUS_META[r.status]?.label || r.status,
+      "LinkedIn URL": r.linkedin_url,
+      "Last Verified": r.last_verified,
+    });
+
+    const allSheet = XLSX.utils.json_to_sheet(results.map(toRow));
+    const changesSheet = XLSX.utils.json_to_sheet(results.filter((r) => r.status === "changed").map(toRow));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, allSheet, "All contacts");
+    XLSX.utils.book_append_sheet(wb, changesSheet, "Changes only");
+
+    XLSX.writeFile(wb, `contact-refresh-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
   function reset() {
@@ -459,7 +477,9 @@ export default function App() {
               <div>
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: PINK, fontWeight: 700, marginBottom: 10 }}>Old data — {oldFile?.name}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <FieldSelect label="Name" columns={Object.keys(oldRows[0] || {})} value={oldMap.name} onChange={(v) => setOldMap({ ...oldMap, name: v })} />
+                  <FieldSelect label="Record ID" columns={Object.keys(oldRows[0] || {})} value={oldMap.recordId} onChange={(v) => setOldMap({ ...oldMap, recordId: v })} />
+                  <FieldSelect label="First Name" columns={Object.keys(oldRows[0] || {})} value={oldMap.firstName} onChange={(v) => setOldMap({ ...oldMap, firstName: v })} />
+                  <FieldSelect label="Last Name" columns={Object.keys(oldRows[0] || {})} value={oldMap.lastName} onChange={(v) => setOldMap({ ...oldMap, lastName: v })} />
                   <FieldSelect label="Title" columns={Object.keys(oldRows[0] || {})} value={oldMap.title} onChange={(v) => setOldMap({ ...oldMap, title: v })} />
                   <FieldSelect label="Company" columns={Object.keys(oldRows[0] || {})} value={oldMap.company} onChange={(v) => setOldMap({ ...oldMap, company: v })} />
                   <FieldSelect label="LinkedIn URL" columns={Object.keys(oldRows[0] || {})} value={oldMap.linkedin} onChange={(v) => setOldMap({ ...oldMap, linkedin: v })} />
@@ -468,7 +488,8 @@ export default function App() {
               <div>
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: PINK, fontWeight: 700, marginBottom: 10 }}>New data — {newFile?.name}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <FieldSelect label="Name" columns={Object.keys(newRows[0] || {})} value={newMap.name} onChange={(v) => setNewMap({ ...newMap, name: v })} />
+                  <FieldSelect label="First Name" columns={Object.keys(newRows[0] || {})} value={newMap.firstName} onChange={(v) => setNewMap({ ...newMap, firstName: v })} />
+                  <FieldSelect label="Last Name" columns={Object.keys(newRows[0] || {})} value={newMap.lastName} onChange={(v) => setNewMap({ ...newMap, lastName: v })} />
                   <FieldSelect label="Title" columns={Object.keys(newRows[0] || {})} value={newMap.title} onChange={(v) => setNewMap({ ...newMap, title: v })} />
                   <FieldSelect label="Company" columns={Object.keys(newRows[0] || {})} value={newMap.company} onChange={(v) => setNewMap({ ...newMap, company: v })} />
                   <FieldSelect label="LinkedIn URL" columns={Object.keys(newRows[0] || {})} value={newMap.linkedin} onChange={(v) => setNewMap({ ...newMap, linkedin: v })} />
@@ -477,14 +498,14 @@ export default function App() {
             </div>
             <button
               className="btn-anim"
-              disabled={!oldMap.name || !newMap.name}
+              disabled={!oldMap.firstName || !newMap.firstName}
               onClick={runComparison}
               style={{
                 marginTop: 28, display: "flex", alignItems: "center", gap: 8,
-                background: (!oldMap.name || !newMap.name) ? LINE : PINK,
-                color: (!oldMap.name || !newMap.name) ? SLATE : WHITE,
+                background: (!oldMap.firstName || !newMap.firstName) ? LINE : PINK,
+                color: (!oldMap.firstName || !newMap.firstName) ? SLATE : WHITE,
                 border: "none", borderRadius: 8, padding: "11px 20px", fontSize: 13, fontWeight: 700,
-                cursor: (!oldMap.name || !newMap.name) ? "not-allowed" : "pointer", fontFamily: "inherit",
+                cursor: (!oldMap.firstName || !newMap.firstName) ? "not-allowed" : "pointer", fontFamily: "inherit",
               }}
             >
               Run check <ArrowRight size={15} />
@@ -533,12 +554,12 @@ export default function App() {
                   </button>
                 );
               })}
-              <button className="btn-anim" onClick={exportCsv} style={{
+              <button className="btn-anim" onClick={exportWorkbook} style={{
                 marginLeft: "auto", display: "flex", alignItems: "center", gap: 6,
                 background: PINK, color: WHITE, border: "none", borderRadius: 6,
                 padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
               }}>
-                <Download size={13} /> Export CSV
+                <Download size={13} /> Export (All + Changes tabs)
               </button>
             </div>
 
